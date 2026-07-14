@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+ENV/
+*.egg-info/
+dist/
+build/
+pytest_cache/
+tests/Outputs/
+
+# Environment
+# .env
+.env.local
+
+# Backend SSL
+backend/ssl/
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+logs/*.log
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Frontend
+node_modules/
+frontend/build/
+frontend/dist/
+# Frontend SSL
+frontend/ssl/
+
+# Excel outputs
+*.xlsx
+!example.xlsx
+chroma_db/
+258d8dc916db8cea/
+data/
