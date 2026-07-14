@@ -15,7 +15,7 @@ pytest_cache/
 tests/Outputs/
 
 # Environment
-# .env
+.env
 .env.local
 
 # Backend SSL

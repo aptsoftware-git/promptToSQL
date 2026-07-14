@@ -32,19 +32,24 @@ from chromadb.utils.embedding_functions import OllamaEmbeddingFunction
 #  Configuration — update these to match your environment
 # ═══════════════════════════════════════════════════════════════════
 
-OLLAMA_HOST = "http://192.168.19.21:11434"
-EMBED_MODEL = "nomic-embed-text"
-CHROMA_DIR = "./chroma_db"
-COLLECTION_NAME = "vanna_memory"
+import os
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
-# Using keyword args avoids URL-parsing issues with special characters
-# in the password (e.g. the '@' in your password)
+OLLAMA_HOST = os.environ.get("OLLAMA_API_URL", "http://127.0.0.1:11434")
+EMBED_MODEL = os.environ.get("EMBED_MODEL", "nomic-embed-text")
+CHROMA_DIR = os.environ.get("CHROMA_DIR", "./chroma_db")
+COLLECTION_NAME = os.environ.get("COLLECTION_NAME", "vanna_memory")
+
 DB_CONFIG = {
-    "host": "localhost",
-    "port": 5432,
-    "dbname": "dvdrental",
-    "user": "postgres",
-    "password": "MrigajSuman@2015",
+    "host": os.environ.get("DB_HOST", "localhost"),
+    "port": int(os.environ.get("DB_PORT", 5432)),
+    "dbname": os.environ.get("DB_NAME", "dvdrental"),
+    "user": os.environ.get("DB_USER", "postgres"),
+    "password": os.environ.get("DB_PASSWORD", ""),
 }
 
 

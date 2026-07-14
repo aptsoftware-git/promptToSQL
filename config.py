@@ -8,21 +8,60 @@ from vanna.core.registry import ToolRegistry
 from vanna import Agent
 from chromadb.utils.embedding_functions import OllamaEmbeddingFunction
 
-# Ollama host (shared between LLM and embeddings)
-OLLAMA_HOST = "http://192.168.19.21:11434"
-LLAMA3 = "llama3.3:70b-instruct-q2_K"
-QWEN = "qwen2.5-coder:32b"
+import os
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+# Load environment variables
+OLLAMA_HOST = os.environ.get("OLLAMA_API_URL", "http://127.0.0.1:11434")
+QWEN = os.environ.get("LLM_MODEL", "qwen2.5-coder:32b")
+EMBED_MODEL = os.environ.get("EMBED_MODEL", "nomic-embed-text")
+CHROMA_DIR = os.environ.get("CHROMA_DIR", "./chroma_db")
+COLLECTION_NAME = os.environ.get("COLLECTION_NAME", "vanna_memory")
+
+import json
+import re
+from vanna.core.tool import ToolCall
+from vanna.core.agent.config import AgentConfig
+
+class CoderOllamaLlmService(OllamaLlmService):
+    async def send_request(self, request):
+        response = await super().send_request(request)
+        if response.content and "{" in response.content:
+            try:
+                # Find first { and last } in case there's conversational text around it
+                start_idx = response.content.find('{')
+                end_idx = response.content.rfind('}')
+                
+                if start_idx != -1 and end_idx != -1:
+                    json_str = response.content[start_idx:end_idx+1]
+                    parsed = json.loads(json_str)
+                    
+                    # Handle both flat format {"sql": "..."} and nested format {"name": "run_sql", "arguments": {"sql": "..."}}
+                    args = parsed.get("arguments", parsed)
+                    
+                    if "sql" in args or "query" in args:
+                        sql = args.get("sql", args.get("query"))
+                        tool_call = ToolCall(id="manual_parse_1", name="run_sql", arguments={"sql": sql})
+                        response.tool_calls = [tool_call]
+                        response.content = None
+            except Exception:
+                pass
+        return response
 
 ## LLM connection
-llm = OllamaLlmService(
+llm = CoderOllamaLlmService(
     model=QWEN,
     host=OLLAMA_HOST
 )
 
-## Embedding function (nomic-embed-text via Ollama)
+## Embedding function
 embedding_fn = OllamaEmbeddingFunction(
     url=OLLAMA_HOST,
-    model_name="nomic-embed-text"
+    model_name=EMBED_MODEL
 )
 
 
@@ -42,11 +81,11 @@ class SafePostgresRunner(PostgresRunner):
 #database connection
 db_tool = RunSqlTool(
     sql_runner=SafePostgresRunner(
-        host='localhost',
-        port=5432,
-        database='dvdrental',
-        user='postgres',
-        password='MrigajSuman@2015'
+        host=os.environ.get("DB_HOST", "localhost"),
+        port=int(os.environ.get("DB_PORT", 5432)),
+        database=os.environ.get("DB_NAME", "dvdrental"),
+        user=os.environ.get("DB_USER", "postgres"),
+        password=os.environ.get("DB_PASSWORD", "")
     )
 )
 
@@ -62,8 +101,8 @@ class CustomChromaMemory(ChromaAgentMemory):
 
 # ChromaDB setup with nomic-embed-text embeddings for agent_memory
 agent_memory = CustomChromaMemory(
-    collection_name="vanna_memory",
-    persist_directory="./chroma_db",
+    collection_name=COLLECTION_NAME,
+    persist_directory=CHROMA_DIR,
     embedding_function=embedding_fn
 )
 
@@ -82,10 +121,13 @@ class SimpleUserResolver(UserResolver):
 
 user_resolver = SimpleUserResolver()
 
+custom_config = AgentConfig(stream_responses=False)
+
 agent = Agent(
     llm_service=llm,
     tool_registry=tools,
     agent_memory=agent_memory,
-    user_resolver=user_resolver
+    user_resolver=user_resolver,
+    config=custom_config
 )
 
