@@ -28,9 +28,16 @@ from vanna.core.tool import ToolCall
 from vanna.core.agent.config import AgentConfig
 
 class CoderOllamaLlmService(OllamaLlmService):
+    """Hybrid LLM service that supports both native tool-calling models (e.g. qwen3, llama3.1)
+    and JSON-dumping models (e.g. qwen2.5-coder) that lack native tool support.
+    
+    Native tool calls flow through untouched via the parent OllamaLlmService.
+    For models that dump raw JSON in content, we parse it and build a ToolCall manually.
+    """
     async def send_request(self, request):
         response = await super().send_request(request)
-        if response.content and "{" in response.content:
+        # Only attempt JSON parsing if the model didn't already produce native tool calls
+        if not response.tool_calls and response.content and "{" in response.content:
             try:
                 # Find first { and last } in case there's conversational text around it
                 start_idx = response.content.find('{')
