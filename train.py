@@ -43,6 +43,7 @@ OLLAMA_HOST = os.environ.get("OLLAMA_API_URL", "http://127.0.0.1:11434")
 EMBED_MODEL = os.environ.get("EMBED_MODEL", "nomic-embed-text")
 CHROMA_DIR = os.environ.get("CHROMA_DIR", "./chroma_db")
 COLLECTION_NAME = os.environ.get("COLLECTION_NAME", "vanna_memory")
+DB_SCHEMA = os.environ.get("DB_SCHEMA", "public")
 
 DB_CONFIG = {
     "host": os.environ.get("DB_HOST", "localhost"),
@@ -95,19 +96,21 @@ def fetch_schema():
     Fetch complete schema from PostgreSQL:
     tables, columns (with types), primary keys, foreign keys,
     unique constraints, and row counts.
+    
+    Uses DB_SCHEMA to target a specific PostgreSQL schema (default: 'public').
     """
     conn = psycopg2.connect(**DB_CONFIG)
     cur = conn.cursor(cursor_factory=RealDictCursor)
     schema = {}
 
-    # All user-defined base tables
+    # All user-defined base tables in the target schema
     cur.execute("""
         SELECT table_name
         FROM information_schema.tables
-        WHERE table_schema = 'public'
+        WHERE table_schema = %s
           AND table_type = 'BASE TABLE'
         ORDER BY table_name
-    """)
+    """, (DB_SCHEMA,))
     tables = [row["table_name"] for row in cur.fetchall()]
 
     for table in tables:
@@ -117,9 +120,9 @@ def fetch_schema():
                    character_maximum_length, numeric_precision, numeric_scale,
                    udt_name
             FROM information_schema.columns
-            WHERE table_schema = 'public' AND table_name = %s
+            WHERE table_schema = %s AND table_name = %s
             ORDER BY ordinal_position
-        """, (table,))
+        """, (DB_SCHEMA, table))
         columns = cur.fetchall()
 
         # ── Primary Keys ──
@@ -129,10 +132,10 @@ def fetch_schema():
             JOIN information_schema.key_column_usage kcu
               ON tc.constraint_name = kcu.constraint_name
              AND tc.table_schema = kcu.table_schema
-            WHERE tc.table_schema = 'public'
+            WHERE tc.table_schema = %s
               AND tc.table_name = %s
               AND tc.constraint_type = 'PRIMARY KEY'
-        """, (table,))
+        """, (DB_SCHEMA, table))
         pks = [row["column_name"] for row in cur.fetchall()]
 
         # ── Foreign Keys ──
@@ -148,10 +151,10 @@ def fetch_schema():
             JOIN information_schema.constraint_column_usage ccu
               ON tc.constraint_name = ccu.constraint_name
              AND tc.table_schema = ccu.table_schema
-            WHERE tc.table_schema = 'public'
+            WHERE tc.table_schema = %s
               AND tc.table_name = %s
               AND tc.constraint_type = 'FOREIGN KEY'
-        """, (table,))
+        """, (DB_SCHEMA, table))
         fks = cur.fetchall()
 
         # ── Unique Constraints ──
@@ -161,15 +164,21 @@ def fetch_schema():
             JOIN information_schema.key_column_usage kcu
               ON tc.constraint_name = kcu.constraint_name
              AND tc.table_schema = kcu.table_schema
-            WHERE tc.table_schema = 'public'
+            WHERE tc.table_schema = %s
               AND tc.table_name = %s
               AND tc.constraint_type = 'UNIQUE'
-        """, (table,))
+        """, (DB_SCHEMA, table))
         uniques = [row["column_name"] for row in cur.fetchall()]
 
-        # ── Row Count ──
-        cur.execute(f'SELECT COUNT(*) AS cnt FROM "{table}"')
-        row_count = cur.fetchone()["cnt"]
+        # ── Row Count (Fast Estimate via pg_class) ──
+        cur.execute("""
+            SELECT reltuples::bigint AS cnt
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE c.relname = %s AND n.nspname = %s
+        """, (table, DB_SCHEMA))
+        result = cur.fetchone()
+        row_count = result["cnt"] if result and result["cnt"] >= 0 else 0
 
         schema[table] = {
             "columns": columns,
@@ -256,7 +265,12 @@ def build_ddl_memory(table_name, info):
 
 
 def build_overview_memory(schema):
-    """Build a high-level database overview listing all tables and their columns."""
+    """Build a high-level database overview listing all tables and row counts.
+    
+    Column details are intentionally omitted here to keep the overview compact
+    and within embedding model context limits. Full column information is
+    already stored separately via per-table description and DDL memories.
+    """
     db_name = DB_CONFIG["dbname"]
     lines = [f"Database: {db_name}"]
     lines.append(f"Total tables: {len(schema)}")
@@ -264,27 +278,49 @@ def build_overview_memory(schema):
     lines.append("")
     for table_name in sorted(schema.keys()):
         info = schema[table_name]
-        col_names = [c["column_name"] for c in info["columns"]]
+        col_count = len(info["columns"])
+        fk_count = len(info["foreign_keys"])
         lines.append(
-            f"  {table_name} ({info['row_count']} rows): {', '.join(col_names)}"
+            f"  {table_name}: {info['row_count']} rows, {col_count} columns, {fk_count} foreign keys"
         )
     return "\n".join(lines)
 
 
-def build_relationships_memory(schema):
-    """Build a complete map of foreign-key relationships and join paths."""
-    lines = ["Database Relationships and Join Paths:"]
-    lines.append("")
+def build_relationships_memory(schema, chunk_size=15):
+    """Build foreign-key relationship maps, chunked to stay within embedding context limits.
+    
+    Returns a list of text chunks (each covering up to `chunk_size` tables)
+    instead of a single string, so large schemas don't overflow the
+    embedding model's context window.
+    """
+    sorted_tables = sorted(schema.keys())
+    chunks = []
 
-    for table_name in sorted(schema.keys()):
-        for fk in schema[table_name]["foreign_keys"]:
-            lines.append(
-                f"JOIN {table_name} WITH {fk['referenced_table']}: "
-                f"{table_name}.{fk['column_name']} = "
-                f"{fk['referenced_table']}.{fk['referenced_column']}"
-            )
+    for i in range(0, len(sorted_tables), chunk_size):
+        batch = sorted_tables[i:i + chunk_size]
+        part_num = (i // chunk_size) + 1
+        total_parts = (len(sorted_tables) + chunk_size - 1) // chunk_size
+        lines = [f"Database Relationships and Join Paths (Part {part_num}/{total_parts}):"]
+        lines.append("")
 
-    return "\n".join(lines)
+        for table_name in batch:
+            for fk in schema[table_name]["foreign_keys"]:
+                lines.append(
+                    f"JOIN {table_name} WITH {fk['referenced_table']}: "
+                    f"{table_name}.{fk['column_name']} = "
+                    f"{fk['referenced_table']}.{fk['referenced_column']}"
+                )
+
+        chunk_text = "\n".join(lines)
+        # Only add if there are actual relationships in this batch
+        if len(lines) > 2:
+            chunks.append(chunk_text)
+
+    # If no relationships exist at all, return a single descriptive chunk
+    if not chunks:
+        chunks.append("Database Relationships and Join Paths: No foreign key relationships found.")
+
+    return chunks
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -470,12 +506,13 @@ def train(reset=False, add_examples=False):
             f"({info['row_count']:>6} rows, {len(info['columns']):>2} cols{fk_str})"
         )
 
-    # ── Seed: Relationships ──
+    # ── Seed: Relationships (chunked for large schemas) ──
     print("\n--- Seeding Relationships ---")
-    relationships = build_relationships_memory(schema)
-    save_text_memory(collection, relationships)
-    count += 1
-    print("  ✓ Relationship / join-path map")
+    relationship_chunks = build_relationships_memory(schema)
+    for chunk in relationship_chunks:
+        save_text_memory(collection, chunk)
+        count += 1
+    print(f"  ✓ Relationship / join-path map ({len(relationship_chunks)} chunk(s))")
 
     # ── Seed: Example Q→SQL Pairs (optional) ──
     if add_examples:
@@ -486,7 +523,6 @@ def train(reset=False, add_examples=False):
             print(f"  ✓ {question[:55]}...")
 
     # ── Summary ──
-    total_text = len(schema) * 2 + 2  # (desc + DDL per table) + overview + relationships
     total_tool = len(EXAMPLE_QUERIES) if add_examples else 0
 
     print("\n" + "=" * 60)
@@ -495,7 +531,7 @@ def train(reset=False, add_examples=False):
     print(f"     • {len(schema)} table descriptions")
     print(f"     • {len(schema)} DDL statements")
     print(f"     • 1 database overview")
-    print(f"     • 1 relationship map")
+    print(f"     • {len(relationship_chunks)} relationship map chunk(s)")
     if add_examples:
         print(f"     • {total_tool} example question→SQL pairs")
     print(f"\n  🔍 At query time, the top-5 matching memories")

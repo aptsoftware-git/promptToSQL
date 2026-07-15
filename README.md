@@ -93,12 +93,14 @@ Create a `.env` file in the root of your directory to define your database crede
 DB_HOST=localhost
 DB_PORT=5432
 DB_NAME=dvdrental
+DB_SCHEMA=public
 DB_USER=postgres
 DB_PASSWORD=your_secure_password
 
 # AI / Model Configurations
 OLLAMA_API_URL=http://127.0.0.1:11434
 LLM_MODEL=qwen2.5-coder:32b
+LLM_NUM_CTX=32768
 EMBED_MODEL=nomic-embed-text
 
 # Memory Storage
