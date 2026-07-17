@@ -105,6 +105,33 @@ class SafePostgresRunner(PostgresRunner):
         # Fill NaN/NaT/pd.NA values with None to prevent Pydantic serialization errors
         import pandas as pd
         df = df.astype(object).where(pd.notnull(df), None)
+        
+        # Try to automatically save successful queries to memory
+        try:
+            global agent
+            if agent:
+                convo = await agent.conversation_store.get_conversation(context.conversation_id, context.user)
+                if convo and convo.messages:
+                    last_user_msg = next((m.content for m in reversed(convo.messages) if m.role == "user"), None)
+                    if last_user_msg:
+                        # Extract SQL safely, handling both dict and Pydantic models
+                        sql = None
+                        if isinstance(args, dict):
+                            sql = args.get("sql", args.get("query"))
+                        elif hasattr(args, "sql"):
+                            sql = args.sql
+                            
+                        if sql:
+                            await context.agent_memory.save_tool_usage(
+                                question=last_user_msg,
+                                tool_name="run_sql",
+                                args={"sql": sql},
+                                context=context,
+                                success=True
+                            )
+                            print(f"Auto-saved SQL to memory for question: {last_user_msg}")
+        except Exception as e:
+            print(f"Failed to auto-save SQL: {e}")
                 
         return df
 
@@ -150,7 +177,7 @@ agent_memory = CustomChromaMemory(
 # Register memory tools (they access agent_memory via ToolContext)
 tools = ToolRegistry()
 tools.register_local_tool(db_tool, access_groups=['admin', 'user'])
-tools.register_local_tool(SaveQuestionToolArgsTool(), access_groups=['admin'])
+tools.register_local_tool(SaveQuestionToolArgsTool(), access_groups=['admin', 'user'])
 tools.register_local_tool(SearchSavedCorrectToolUsesTool(), access_groups=['admin', 'user'])
 tools.register_local_tool(SaveTextMemoryTool(), access_groups=['admin', 'user'])
 
@@ -166,7 +193,7 @@ from vanna.core.filter import ConversationFilter
 
 class RecentTurnsFilter(ConversationFilter):
     """Keeps only the system prompt and the last N messages to prevent context overflow from huge SQL results."""
-    def __init__(self, keep_last_n: int = 8):
+    def __init__(self, keep_last_n: int = 30):
         self.keep_last_n = keep_last_n
 
     async def filter_messages(self, messages):
@@ -192,5 +219,5 @@ agent = Agent(
     agent_memory=agent_memory,
     config=custom_config,
     system_prompt_builder=SchemaAwareSystemPromptBuilder(),
-    conversation_filters=[RecentTurnsFilter(keep_last_n=8)],
+    conversation_filters=[RecentTurnsFilter(keep_last_n=30)],
 )
