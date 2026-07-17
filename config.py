@@ -69,7 +69,7 @@ class CoderOllamaLlmService(OllamaLlmService):
                     response.tool_calls = [tool_call]
                     response.content = None
             except Exception as e:
-                print(f"⚠️ JSON Parse Error: {e} | Raw string: {content[start_idx:end_idx+1]}")
+                print(f"JSON Parse Error: {e} | Raw string: {content[start_idx:end_idx+1]}")
         return response
 
 ## LLM connection
@@ -77,6 +77,7 @@ llm = CoderOllamaLlmService(
     model=QWEN,
     host=OLLAMA_HOST,
     num_ctx=LLM_NUM_CTX,
+#    num_gpu=0,  # 0 forces Ollama to load 0 layers into VRAM, strictly using the CPU
     stop=["<|im_start|>", "<|im_end|>"]
 )
 
@@ -97,6 +98,13 @@ class SafePostgresRunner(PostgresRunner):
             # Check if any element in the column is a memoryview
             if any(isinstance(val, memoryview) for val in df[col]):
                 df[col] = df[col].apply(lambda x: "<binary_data>" if isinstance(x, memoryview) else x)
+            # Check if column is datetime and convert to string
+            elif df[col].dtype == 'datetime64[ns]' or 'datetime' in str(df[col].dtype):
+                df[col] = df[col].astype(str)
+                
+        # Fill NaN/NaT/pd.NA values with None to prevent Pydantic serialization errors
+        import pandas as pd
+        df = df.astype(object).where(pd.notnull(df), None)
                 
         return df
 
