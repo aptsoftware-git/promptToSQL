@@ -150,10 +150,15 @@ db_tool = RunSqlTool(
 class SchemaAwareSystemPromptBuilder(DefaultSystemPromptBuilder):
     async def build_system_prompt(self, user, tools):
         base_prompt = await super().build_system_prompt(user, tools)
+        
+        # Handle multiple schemas in the DB_SCHEMA variable (e.g. "entity,public")
+        schemas = [s.strip() for s in DB_SCHEMA.split(",")]
+        schema_list_str = ", ".join(f"'{s}'" for s in schemas)
+        
         schema_hint = (
-            f"\n\nCRITICAL INSTRUCTION: The target database schema is '{DB_SCHEMA}'. "
-            f"If you query information_schema, you MUST use WHERE table_schema = '{DB_SCHEMA}'. "
-            f"Do NOT query the 'public' schema unless explicitly asked."
+            f"\n\nCRITICAL INSTRUCTION: The target database schemas are {schema_list_str}. "
+            f"You are permitted to freely JOIN tables across these schemas without restrictions. "
+            f"If you query information_schema, you MUST use WHERE table_schema IN ({schema_list_str}). "
         )
         return (base_prompt or "") + schema_hint
 

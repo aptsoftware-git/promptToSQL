@@ -100,20 +100,21 @@ def fetch_schema():
     Uses DB_SCHEMA to target a specific PostgreSQL schema (default: 'public').
     """
     conn = psycopg2.connect(**DB_CONFIG)
+    schemas = tuple(s.strip() for s in DB_SCHEMA.split(','))
     cur = conn.cursor(cursor_factory=RealDictCursor)
     schema = {}
 
     # All user-defined base tables in the target schema
     cur.execute("""
-        SELECT table_name
+        SELECT table_schema, table_name
         FROM information_schema.tables
-        WHERE table_schema = %s
+        WHERE table_schema IN %s
           AND table_type = 'BASE TABLE'
         ORDER BY table_name
-    """, (DB_SCHEMA,))
-    tables = [row["table_name"] for row in cur.fetchall()]
+    """, (schemas,))
+    tables = [(row["table_schema"], row["table_name"]) for row in cur.fetchall()]
 
-    for table in tables:
+    for schema_name, table in tables:
         # ── Columns ──
         cur.execute("""
             SELECT column_name, data_type, is_nullable, column_default,
@@ -122,7 +123,7 @@ def fetch_schema():
             FROM information_schema.columns
             WHERE table_schema = %s AND table_name = %s
             ORDER BY ordinal_position
-        """, (DB_SCHEMA, table))
+        """, (schema_name, table))
         columns = cur.fetchall()
 
         # ── Primary Keys ──
@@ -135,7 +136,7 @@ def fetch_schema():
             WHERE tc.table_schema = %s
               AND tc.table_name = %s
               AND tc.constraint_type = 'PRIMARY KEY'
-        """, (DB_SCHEMA, table))
+        """, (schema_name, table))
         pks = [row["column_name"] for row in cur.fetchall()]
 
         # ── Foreign Keys ──
@@ -154,7 +155,7 @@ def fetch_schema():
             WHERE tc.table_schema = %s
               AND tc.table_name = %s
               AND tc.constraint_type = 'FOREIGN KEY'
-        """, (DB_SCHEMA, table))
+        """, (schema_name, table))
         fks = cur.fetchall()
 
         # ── Unique Constraints ──
@@ -167,7 +168,7 @@ def fetch_schema():
             WHERE tc.table_schema = %s
               AND tc.table_name = %s
               AND tc.constraint_type = 'UNIQUE'
-        """, (DB_SCHEMA, table))
+        """, (schema_name, table))
         uniques = [row["column_name"] for row in cur.fetchall()]
 
         # ── Row Count (Fast Estimate via pg_class) ──
@@ -176,7 +177,7 @@ def fetch_schema():
             FROM pg_class c
             JOIN pg_namespace n ON n.oid = c.relnamespace
             WHERE c.relname = %s AND n.nspname = %s
-        """, (table, DB_SCHEMA))
+        """, (table, schema_name))
         result = cur.fetchone()
         row_count = result["cnt"] if result and result["cnt"] >= 0 else 0
 
